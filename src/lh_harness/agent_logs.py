@@ -20,6 +20,7 @@ CLAUDE_STREAM_JSON = "claude_stream_json"
 CODEX_EXEC_JSON = "codex_exec_json"
 DEEPSEEK_HARNESS_JSONL = "deepseek_harness_jsonl"
 OPENCODE_RUN_JSON = "opencode_run_json"
+HERMES_STREAM_JSON = "hermes_stream_json"
 # Untyped chat transcripts (one `{"role": ..., "content": ...}` object per line,
 # optionally wrapped in `message`). Neither CLI emits this directly, but saved
 # chat.jsonl transcripts and older runs use it.
@@ -44,6 +45,13 @@ _CLAUDE_EVENTS = {"system", "assistant", "user", "result"}
 # shared with Codex's `--json` protocol, so it is only matched after the Codex
 # and Claude event families, which real logs open with before any error record.
 _OPENCODE_EVENTS = {"step_start", "step_finish", "tool_use", "text", "error"}
+# Hermes `chat --format stream-json` emits one JSON event per line: a single
+# `system`/`init` header, `tool_use`/`tool_result` pairs, incremental `text`
+# chunks, and one final `result`.  `system` and `result` collide with the
+# Claude family, so Hermes is detected through its unique `subtype: "init"`
+# header shape before the Claude check.
+_HERMES_INIT_EVENTS = {"system"}
+_HERMES_EVENTS = {"system", "tool_use", "tool_result", "text", "result"}
 # Codex items that record an action rather than assistant prose.
 _CODEX_TOOL_ITEMS = {
     "command_execution",
@@ -58,18 +66,39 @@ _CODEX_TOOL_ITEMS = {
 
 def detect_format(raw: str) -> str:
     saw_chat_role = False
+    hermes_events = 0
+    hermes_init = False
     for record in _json_records(raw):
         record_type = record.get("type")
         if record_type == "dsh.result":
             return DEEPSEEK_HARNESS_JSONL
         if record_type in _CODEX_EVENTS:
             return CODEX_EXEC_JSON
-        if record_type in _CLAUDE_EVENTS:
+        if (
+            record_type in _HERMES_INIT_EVENTS
+            and record.get("subtype") == "init"
+            and isinstance(record.get("session_id"), str)
+            and isinstance(record.get("timestamp"), int)
+            and "message" not in record
+        ):
+            # A Claude `system/init` record carries `message`, `cwd`, and
+            # string timestamps; the Hermes header does not.
+            hermes_init = True
+            hermes_events += 1
+            continue
+        # `system` and `result` also appear in the Claude family, so only a
+        # stream without the Hermes header can be Claude (or OpenCode, whose
+        # `tool_use`/`text` collide with Hermes the same way).
+        if record_type in _CLAUDE_EVENTS and not hermes_init:
             return CLAUDE_STREAM_JSON
-        if record_type in _OPENCODE_EVENTS:
+        if record_type in _OPENCODE_EVENTS and not hermes_init:
             return OPENCODE_RUN_JSON
+        if record_type in _HERMES_EVENTS:
+            hermes_events += 1
         if _chat_message(record) is not None:
             saw_chat_role = True
+    if hermes_init and hermes_events >= 1:
+        return HERMES_STREAM_JSON
     return CHAT_JSONL if saw_chat_role else UNKNOWN
 
 
@@ -89,6 +118,9 @@ def visible_output(raw: str) -> str:
         return "\n\n".join(assistant_texts).strip()
     if log_format == OPENCODE_RUN_JSON:
         texts = _opencode_texts(raw)
+        return texts[-1].strip() if texts else ""
+    if log_format == HERMES_STREAM_JSON:
+        texts = _hermes_texts(raw)
         return texts[-1].strip() if texts else ""
     if log_format == CHAT_JSONL:
         texts = _chat_assistant_texts(raw)
@@ -110,6 +142,8 @@ def assistant_texts(raw: str) -> list[str]:
         return texts
     if log_format == OPENCODE_RUN_JSON:
         return _opencode_texts(raw)
+    if log_format == HERMES_STREAM_JSON:
+        return _hermes_texts(raw)
     if log_format == CHAT_JSONL:
         return _chat_assistant_texts(raw)
     return []
@@ -145,6 +179,8 @@ def tool_output_view(raw: str) -> str:
             parts.extend(_claude_tool_output(record))
         elif log_format == OPENCODE_RUN_JSON:
             parts.extend(_opencode_tool_output(record))
+        elif log_format == HERMES_STREAM_JSON:
+            parts.extend(_hermes_tool_output(record))
     return "\n".join(part for part in parts if part)
 
 
@@ -195,6 +231,10 @@ def runtime_event_view(raw: str) -> str:
             parts.append(f"response.failed: {message}")
         elif log_format == OPENCODE_RUN_JSON and record_type == "error":
             parts.append(f"response.failed: {_opencode_error_message(record)}")
+        elif log_format == HERMES_STREAM_JSON and record_type == "result":
+            if _nonzero_exit_code(record.get("exit_code")):
+                detail = record.get("error") or record.get("text") or "hermes run failed"
+                parts.append(f"response.failed: {detail}")
     return "\n".join(parts)
 
 
@@ -215,6 +255,8 @@ def parse_trajectory(raw: str, *, max_steps: int | None = None) -> list[dict[str
         return _claude_trajectory(raw, max_steps=bounded_steps)
     if log_format == OPENCODE_RUN_JSON:
         return _opencode_trajectory(raw, max_steps=bounded_steps)
+    if log_format == HERMES_STREAM_JSON:
+        return _hermes_trajectory(raw, max_steps=bounded_steps)
     return []
 
 
@@ -716,6 +758,108 @@ def _opencode_result_step(
     if isinstance(cost, (int, float)):
         result["cost_usd"] = cost
     return result
+
+
+# ----------------------------------------------------------------------------
+# Hermes (`hermes chat --format stream-json`)
+# ----------------------------------------------------------------------------
+
+
+def _hermes_texts(raw: str) -> list[str]:
+    """Return assistant-visible texts, with the final reply authoritative.
+
+    Hermes streams the answer as incremental ``text`` chunks and closes with
+    a ``result`` event whose ``text`` field is the complete final reply.  The
+    result text replaces the trailing chunks so the Manager and Auditor read
+    one coherent answer instead of a concatenation of deltas.
+    """
+
+    texts: list[str] = []
+    for record in _json_records(raw):
+        record_type = record.get("type")
+        if record_type == "text":
+            text = record.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text)
+        elif record_type == "result":
+            text = record.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text)
+    return texts
+
+
+def _hermes_tool_output(record: dict[str, Any]) -> list[str]:
+    if record.get("type") != "tool_result":
+        return []
+    output = record.get("output")
+    if isinstance(output, str) and output.strip():
+        return [output]
+    return []
+
+
+def _hermes_trajectory(raw: str, *, max_steps: int | None = None) -> list[dict[str, Any]]:
+    steps: deque[dict[str, Any]] = deque(maxlen=max_steps)
+    tool_seq = 0
+    for record in _json_records(raw):
+        record_type = record.get("type")
+        if record_type == "system" and record.get("subtype") == "init":
+            steps.append(
+                {
+                    "kind": "session",
+                    "model": record.get("model", ""),
+                    "cwd": "",
+                    "mcp_servers": [],
+                    "tool_count": None,
+                }
+            )
+            continue
+        if record_type == "text":
+            text = record.get("text")
+            if isinstance(text, str) and text.strip():
+                steps.append({"kind": "text", "text": text})
+            continue
+        if record_type == "tool_use":
+            tool_seq += 1
+            tool_id = str(record.get("id") or f"hermes_tool_{tool_seq}")
+            input_value = record.get("input")
+            steps.append(
+                {
+                    "kind": "tool_use",
+                    "id": tool_id,
+                    "name": str(record.get("name") or "tool"),
+                    "input": input_value if isinstance(input_value, dict) else {"input": input_value},
+                }
+            )
+            continue
+        if record_type == "tool_result":
+            tool_seq += 1
+            tool_id = str(record.get("id") or f"hermes_tool_{tool_seq}")
+            output = record.get("output")
+            text = str(output) if output is not None else ""
+            steps.append(
+                _tool_result_step(tool_id, text, [], bool(record.get("is_error")))
+            )
+            continue
+        if record_type == "result":
+            final_text = ""
+            for step in reversed(steps):
+                if step.get("kind") == "text":
+                    final_text = str(step.get("text") or "")
+                    break
+            tokens = record.get("tokens") if isinstance(record.get("tokens"), dict) else {}
+            steps.append(
+                {
+                    "kind": "result",
+                    "text": final_text,
+                    "is_error": _nonzero_exit_code(record.get("exit_code")),
+                    "num_turns": 1,
+                    "input_tokens": tokens.get("input"),
+                    "output_tokens": tokens.get("output"),
+                    "reasoning_tokens": None,
+                    "cached_input_tokens": tokens.get("cache_read"),
+                }
+            )
+    return list(steps)
 
 
 # ----------------------------------------------------------------------------

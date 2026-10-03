@@ -249,6 +249,7 @@ const MODEL_PRESETS: Record<string, { id: string; label: string }[]> = {
   claude_code: [{ id: 'claude-opus-5', label: 'Claude Opus 5 · default' }],
   deepseek_harness: [{ id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash · default' }],
   opencode: [{ id: 'opencode/deepseek-v4-flash-free', label: 'DeepSeek V4 Flash Free · default' }],
+  hermes: [{ id: '', label: 'Hermes provider default' }],
 };
 
 type PublicRole = 'manager' | 'executor' | 'auditor';
@@ -1922,7 +1923,7 @@ function RoleRuntimePicker({ role, selection, meta, onChange }: { role: typeof P
   const { text } = useUiLanguage();
   const agentChoices = meta?.agents?.length
     ? meta.agents.map((item) => ({ id: item.id, label: item.label || item.id, availability: agentAvailability(item), version: item.version || '', problem: item.problem || '' }))
-    : [{ id: 'codex', label: 'Codex' }, { id: 'claude_code', label: 'Claude Code' }, { id: 'deepseek_harness', label: 'DeepSeek Harness (CLI)' }, { id: 'opencode', label: 'OpenCode' }].map((item) => ({ ...item, availability: 'unknown' as const, version: '', problem: '' }));
+    : [{ id: 'codex', label: 'Codex' }, { id: 'claude_code', label: 'Claude Code' }, { id: 'deepseek_harness', label: 'DeepSeek Harness (CLI)' }, { id: 'opencode', label: 'OpenCode' }, { id: 'hermes', label: 'Hermes Agent' }].map((item) => ({ ...item, availability: 'unknown' as const, version: '', problem: '' }));
   const discovered = normalizedModelChoices(
     meta?.models?.[selection.agent] || meta?.agents?.find((item) => item.id === selection.agent)?.models,
   );
@@ -1942,7 +1943,9 @@ function RoleRuntimePicker({ role, selection, meta, onChange }: { role: typeof P
     ? text('DeepSeek Harness 当前仅执行 CLI/代码任务，不包含 computer-use 或 MCP。', 'DeepSeek Harness currently runs CLI/code tasks only; computer-use and MCP are not included.')
     : selection.agent === 'opencode'
       ? text('OpenCode 当前仅执行 CLI/代码任务，不包含 computer-use 或 MCP。', 'OpenCode currently runs CLI/code tasks only; computer-use and MCP are not included.')
-      : '';
+      : selection.agent === 'hermes'
+        ? text('Hermes 当前仅执行 CLI/代码任务，模型与凭证由 Hermes 自身的 credential pool 决定。', 'Hermes currently runs CLI/code tasks only; models and credentials come from Hermes\'s own credential pool.')
+        : '';
   const roleDescription = role.id === 'manager'
     ? text('规划、路由与完成判定', 'Planning, routing, and completion decisions')
     : role.id === 'executor'

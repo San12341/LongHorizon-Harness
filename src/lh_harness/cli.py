@@ -28,6 +28,7 @@ from .types import (
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
     DEFAULT_DEEPSEEK_HARNESS_MODEL,
+    DEFAULT_HERMES_MODEL,
     DEFAULT_OPENCODE_MODEL,
     DEFAULT_MAX_ROUNDS,
     DEFAULT_WORKSPACE_PATH,
@@ -61,6 +62,7 @@ _AGENTS = (
     ("codex", "codex", DEFAULT_CODEX_MODEL),
     ("deepseek_harness", "dsh", DEFAULT_DEEPSEEK_HARNESS_MODEL),
     ("opencode", "opencode", DEFAULT_OPENCODE_MODEL),
+    ("hermes", "hermes", DEFAULT_HERMES_MODEL),
 )
 _AGENT_CHOICES = tuple(name for name, _, _ in _AGENTS)
 _MCP_AGENT_CHOICES = ("claude_code", "codex")
@@ -1722,7 +1724,7 @@ def _run_command(args: argparse.Namespace) -> int:
     def resolve_mcp_config(agent_name: str) -> str | None:
         # The agent's own --*-mcp-config wins; otherwise the installed
         # computer-use plugin with the highest priority is loaded for this agent.
-        if agent_name in {"deepseek_harness", "opencode"}:
+        if agent_name in {"deepseek_harness", "opencode", "hermes"}:
             return None
         override = getattr(args, _MCP_CONFIG_DESTS[agent_name], None)
         if override:
@@ -2091,6 +2093,7 @@ def _public_role_configs_from_args(
         "claude_code": DEFAULT_CLAUDE_MODEL,
         "deepseek_harness": DEFAULT_DEEPSEEK_HARNESS_MODEL,
         "opencode": DEFAULT_OPENCODE_MODEL,
+        "hermes": DEFAULT_HERMES_MODEL,
     }
     result: dict[str, dict[str, str | None]] = {}
     for role in public_roles:
@@ -2282,6 +2285,19 @@ def _build_agent(
         if model is not None:
             kwargs["model"] = model
         return OpenCodeAdapter(**kwargs)
+    if name == "hermes":
+        from .adapters.hermes import HermesAdapter
+
+        kwargs = dict(
+            workspace_path=workspace_path,
+            prompt_dir=prompt_dir,
+            role=role,
+            hidden_paths=hidden_paths,
+            reasoning_effort=reasoning_effort,
+        )
+        if model is not None:
+            kwargs["model"] = model
+        return HermesAdapter(**kwargs)
     raise ValueError(f"Unknown agent: {name}")
 
 

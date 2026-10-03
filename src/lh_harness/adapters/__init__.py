@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from .claude_code import ClaudeCodeAdapter
     from .codex import CodexAdapter
     from .deepseek_harness import DeepSeekHarnessAdapter
+    from .hermes import HermesAdapter
     from .opencode import OpenCodeAdapter
 
 _LAZY_EXPORTS = {
@@ -16,6 +17,7 @@ _LAZY_EXPORTS = {
     "ClaudeCodeAdapter": ".claude_code",
     "CodexAdapter": ".codex",
     "DeepSeekHarnessAdapter": ".deepseek_harness",
+    "HermesAdapter": ".hermes",
     "OpenCodeAdapter": ".opencode",
 }
 
@@ -24,6 +26,7 @@ __all__ = [
     "ClaudeCodeAdapter",
     "CodexAdapter",
     "DeepSeekHarnessAdapter",
+    "HermesAdapter",
     "OpenCodeAdapter",
 ]
 

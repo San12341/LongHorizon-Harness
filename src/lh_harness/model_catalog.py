@@ -32,12 +32,14 @@ from .types import (
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
     DEFAULT_DEEPSEEK_HARNESS_MODEL,
+    DEFAULT_HERMES_MODEL,
     DEFAULT_OPENCODE_MODEL,
 )
 from .utils.agent_cli import (
     is_agent_binary_available,
     resolve_codex_binary,
     resolve_dsh_binary,
+    resolve_hermes_binary,
     resolve_opencode_binary,
 )
 
@@ -48,7 +50,7 @@ _MODEL_ID_LIMIT = 256
 _cache_lock = Lock()
 _cached_at = 0.0
 _cached_result: dict[str, Any] | None = None
-_cached_key: tuple[str, str, str] | None = None
+_cached_key: tuple[str, ...] | None = None
 _UNSET = object()
 
 
@@ -58,6 +60,7 @@ def discover_model_catalog(
     codex_binary: str | None | object = _UNSET,
     dsh_binary: str | None | object = _UNSET,
     opencode_binary: str | None | object = _UNSET,
+    hermes_binary: str | None | object = _UNSET,
 ) -> dict[str, Any]:
     """Return agent/model choices plus honest discovery provenance.
 
@@ -81,12 +84,18 @@ def discover_model_catalog(
     )
     if resolved_opencode_binary is not None and not isinstance(resolved_opencode_binary, str):
         raise TypeError("opencode_binary must be a string or None")
+    resolved_hermes_binary = (
+        resolve_hermes_binary() if hermes_binary is _UNSET else hermes_binary
+    )
+    if resolved_hermes_binary is not None and not isinstance(resolved_hermes_binary, str):
+        raise TypeError("hermes_binary must be a string or None")
     claude_binary = shutil.which("claude")
     cache_key = (
         resolved_codex_binary or "",
         claude_binary or "",
         resolved_dsh_binary or "",
         resolved_opencode_binary or "",
+        resolved_hermes_binary or "",
     )
     with _cache_lock:
         if (
@@ -106,23 +115,27 @@ def discover_model_catalog(
         opencode_models, opencode_discovery = _discover_opencode_models(
             resolved_opencode_binary
         )
+        hermes_models, hermes_discovery = _discover_hermes_models(resolved_hermes_binary)
         models_by_agent = {
             "codex": codex_models,
             "claude_code": claude_models,
             "deepseek_harness": deepseek_models,
             "opencode": opencode_models,
+            "hermes": hermes_models,
         }
         discovery_by_agent = {
             "codex": codex_discovery,
             "claude_code": claude_discovery,
             "deepseek_harness": deepseek_discovery,
             "opencode": opencode_discovery,
+            "hermes": hermes_discovery,
         }
         resolved_binaries = {
             "codex": resolved_codex_binary,
             "claude_code": claude_binary,
             "deepseek_harness": resolved_dsh_binary,
             "opencode": resolved_opencode_binary,
+            "hermes": resolved_hermes_binary,
         }
         probes = probe_agents(force=force, binaries=resolved_binaries)
         agents: list[dict[str, Any]] = []
@@ -284,6 +297,24 @@ def _discover_opencode_models(
             "OpenCode 未提供稳定的账号级模型列表；可使用默认模型或输入端点暴露的自定义模型 ID。"
             if available
             else "未找到 OpenCode CLI（opencode）。"
+        ),
+    }
+
+
+def _discover_hermes_models(
+    binary: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    models: list[dict[str, Any]] = []
+    available = is_agent_binary_available(binary)
+    return models, {
+        "status": "suggested" if available else "unavailable",
+        "source": "hermes_default",
+        "account_scoped": False,
+        "refreshed_at": None,
+        "warning": (
+            "Hermes 使用自身 credential pool 中的默认模型；留空即用 Hermes 当前配置，或输入其 provider 暴露的模型 ID。"
+            if available
+            else "未找到 Hermes CLI（hermes）。"
         ),
     }
 

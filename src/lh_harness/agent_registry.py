@@ -27,6 +27,7 @@ from .types import (
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
     DEFAULT_DEEPSEEK_HARNESS_MODEL,
+    DEFAULT_HERMES_MODEL,
     DEFAULT_OPENCODE_MODEL,
 )
 from .utils.agent_cli import probe_agent_cli, resolve_agent_binary
@@ -118,6 +119,20 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
             # authoritative list to discover.
             source="declared",
             declared_choices=("minimal", "low", "medium", "high", "max"),
+        ),
+    ),
+    AgentSpec(
+        id="hermes",
+        label="Hermes Agent",
+        binary="hermes",
+        default_model=DEFAULT_HERMES_MODEL,
+        capabilities=frozenset({"cli"}),
+        reasoning=ReasoningSpec(
+            transport="cli_flag",
+            flag="--reasoning",
+            scope="per_agent",
+            source="declared",
+            declared_choices=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
         ),
     ),
 )
